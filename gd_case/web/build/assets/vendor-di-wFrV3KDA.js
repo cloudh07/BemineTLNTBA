@@ -1,0 +1,1 @@
+const r=Symbol.for("@inversifyjs/common/islazyServiceIdentifier");class e{[r];#t;constructor(t){this.#t=t,this[r]=!0}static is(t){return typeof t=="object"&&t!==null&&t[r]===!0}unwrap(){return this.#t()}}export{e as r};
