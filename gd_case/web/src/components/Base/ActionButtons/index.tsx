@@ -116,7 +116,7 @@ const ActionButtons = ({
   onClose
 }: ActionButtonsProps): JSX.Element => {
   return (
-    <div className="flex items-center gap-[1.2vh] h-[4.9vh] z-[2]">
+    <div className="absolute bottom-[10vh] left-0 w-full justify-center flex items-center gap-[1.2vh] h-[4.9vh] z-[2]">
       {isButtonEnabled(10) && (
         <AmountButton
           amount={10}

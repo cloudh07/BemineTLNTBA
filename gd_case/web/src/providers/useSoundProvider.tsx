@@ -17,7 +17,7 @@ export const SoundProvider = ({
 
   const playByKey = useCallback((key: SoundSourceKey) => {
     const fileBase = SOUND_SOURCES[key];
-    const url = `/sounds/${fileBase}.ogg`;
+    const url = `sounds/${fileBase}.ogg`;
     const el = new Audio(url);
     el.volume = volumeRef.current;
     return el.play();
@@ -68,7 +68,7 @@ export const SoundProvider = ({
         return;
       }
       const fileBase = SOUND_SOURCES[key];
-      const url = `/sounds/${fileBase}.ogg`;
+      const url = `sounds/${fileBase}.ogg`;
       console.error(`[Sound] play "${key}" (${url}):`, err);
     });
   }, [bindUnlockListeners, playByKey]);

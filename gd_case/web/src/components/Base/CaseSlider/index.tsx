@@ -14,7 +14,7 @@ interface CaseSliderProps {
 const CaseSlider = forwardRef<HTMLDivElement, CaseSliderProps>(
   ({ sliderItems, offset, centerItem, getItemOpacity, itemRefs }, ref): JSX.Element => {
     return (
-      <div className="relative w-[138.85vh] h-[15vh] mb-[4.65vh] overflow-hidden" ref={ref}>
+      <div className="relative w-[138.85vh] h-[15vh] -mt-[19vh] overflow-hidden scale-[1.1]" ref={ref}>
         <div className="absolute inset-0 bg-[url('/images/case-slider-wrapper.webp')] bg-no-repeat bg-full-size bg-full-center pointer-events-none z-[2]" />
 
         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[3] pointer-events-none">
@@ -22,7 +22,7 @@ const CaseSlider = forwardRef<HTMLDivElement, CaseSliderProps>(
             className="flex items-center justify-center w-[11.05vh] h-[11.65vh] bg-no-repeat bg-full-size bg-full-center pt-[.35vh] transition-all duration-250"
             style={{
               backgroundImage: "url('/images/case-main-item-wrapper.webp')",
-              filter: 'drop-shadow(0 0 3.5px #D93636)'
+              filter: 'drop-shadow(0 0 3.5px #D93698)'
             }}
           >
             {centerItem && (

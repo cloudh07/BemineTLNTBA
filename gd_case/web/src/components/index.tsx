@@ -1,18 +1,40 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useLayoutEffect, useState, useRef, useCallback } from "react";
 import { observer } from "mobx-react-lite";
 import { AnimatePresence, motion } from "motion/react";
 import { useMainService } from "@/services/app/main/main.service";
 import { isEnvBrowser } from "@/utils/misc";
-import { formatNumber, getInventoryImageUrl, getCaseItemRarityTier } from "@/utils/helpers";
+// getInventoryImageUrl, formatNumber
+import { getCaseItemRarityTier } from "@/utils/helpers";
 import { fetchNui } from "@/utils/fetchNui";
 import { CaseItem, CaseOpeningState, CaseRarityTier, SelectedAmount } from "@/types";
-import { ITEM_WIDTH, ITEM_GAP, ITEMS_TO_GENERATE, IDLE_SPEED_VH, SPIN_DURATION_MS } from "@/constants";
+import {
+  ITEM_WIDTH,
+  ITEM_GAP,
+  ITEMS_TO_GENERATE,
+  IDLE_SPEED_VH,
+  CASE_INTRO_VIDEO_SRC,
+  CASE_INTRO_VIDEO_VOLUME,
+  CASE_SLIDER_AFTER_INTRO_FADE_S,
+  CASE_SLIDER_ENTERS_AT_MS,
+  CASE_SPIN_SYNC_WITH_VIDEO_MS,
+} from "@/constants";
 import { ApiResponseData } from "@/types";
 
-import { Image } from "./Shared";
+// import { Image } from "./Shared";
 import { CaseSlider, ActionButtons, ResultOverlay } from "./Base";
 
 const ITEM_TOTAL = ITEM_WIDTH + ITEM_GAP;
+
+const buildRandomSliderStrip = (pool: CaseItem[]): CaseItem[] => {
+  if (pool.length === 0) return [];
+  const generated: CaseItem[] = [];
+  for (let i = 0; i < ITEMS_TO_GENERATE; i++) {
+    const randomIndex = Math.floor(Math.random() * pool.length);
+    generated.push({ ...pool[randomIndex] });
+  }
+  return generated;
+};
+
 const getOwnedCaseCount = (
   userItems: Record<string, { name: string; count?: unknown }>,
   caseName?: string
@@ -63,8 +85,19 @@ const CaseOpening = observer(() => {
   const awardAudioRef = useRef<HTMLAudioElement | null>(null);
   const shiftedCountRef = useRef<number>(0);
   const targetItemIndexRef = useRef<number>(0);
+  const introVideoRef = useRef<HTMLVideoElement | null>(null);
+  const preludeTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const spinDurationMsRef = useRef<number>(CASE_SPIN_SYNC_WITH_VIDEO_MS);
+  const spinFinalizeRef = useRef<(() => void) | null>(null);
 
   const [sliderItems, setSliderItems] = useState<CaseItem[]>([]);
+  const [introComplete, setIntroComplete] = useState<boolean>(false);
+  const [isPreludePlaying, setIsPreludePlaying] = useState<boolean>(false);
+  const isPreludePlayingRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    isPreludePlayingRef.current = isPreludePlaying;
+  }, [isPreludePlaying]);
   const [offset, setOffset] = useState<number>(0);
   const [selectedAmount, setSelectedAmount] = useState<SelectedAmount>(1);
   const [wonItems, setWonItems] = useState<CaseItem[]>([]);
@@ -83,10 +116,10 @@ const CaseOpening = observer(() => {
   const availableItems = caseCollection?.items || [];
 
   const ownedCaseCount = getOwnedCaseCount(mainService.userItems, caseCollection?.name);
-  const canOpen = ownedCaseCount >= selectedAmount;
+  const canOpen = ownedCaseCount >= selectedAmount && !isPreludePlaying;
 
   const canOpenWithAmount = (amount: SelectedAmount): boolean => {
-    return ownedCaseCount >= amount;
+    return ownedCaseCount >= amount && !isPreludePlaying;
   };
 
   const getItemDisplayLabel = createItemDisplayLabelGetter(getItemLabel);
@@ -97,6 +130,24 @@ const CaseOpening = observer(() => {
     stateRef.current = state;
   }, [state]);
 
+  const clearPrelude = useCallback(() => {
+    if (preludeTimeoutRef.current != null) {
+      clearTimeout(preludeTimeoutRef.current);
+      preludeTimeoutRef.current = undefined;
+    }
+    setIsPreludePlaying(false);
+    const video = introVideoRef.current;
+    if (video) {
+      try {
+        video.pause();
+        video.currentTime = 0;
+        video.load();
+      } catch {
+        /* ignore */
+      }
+    }
+  }, []);
+
   // const resetSelectedCase = () => {
   //   setSelectedAmount(1);
   // };
@@ -104,24 +155,28 @@ const CaseOpening = observer(() => {
   useEffect(() => {
     if (!isEnvBrowser()) {
       const handleEscape = async (e: KeyboardEvent) => {
-        if (e.key === "Escape" && stateRef.current === 'idle') {
-          // resetSelectedCase();
-          await fetchNui("main:close");
+        if (e.key !== 'Escape' || stateRef.current !== 'idle') return;
+        if (isPreludePlayingRef.current) {
+          setWonItems([]);
         }
+        clearPrelude();
+        await fetchNui('main:close');
       };
-      window.addEventListener("keydown", handleEscape);
-      return () => window.removeEventListener("keydown", handleEscape);
+      window.addEventListener('keydown', handleEscape);
+      return () => window.removeEventListener('keydown', handleEscape);
     }
-  }, []);
+  }, [clearPrelude]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (show) {
       setSelectedAmount(1);
+      setIntroComplete(false);
     }
-  }, [show]);
+    clearPrelude();
+  }, [show, clearPrelude]);
 
   useEffect(() => {
-    const spinAudio = new Audio('/sounds/opening.ogg');
+    const spinAudio = new Audio('./sounds/opening.ogg');
     spinAudio.preload = 'auto';
     spinAudio.volume = 1;
     spinAudio.addEventListener('error', () => {
@@ -129,7 +184,7 @@ const CaseOpening = observer(() => {
     });
     spinAudioRef.current = spinAudio;
 
-    const awardAudio = new Audio('/sounds/opening-award.ogg');
+    const awardAudio = new Audio('./sounds/opening-award.ogg');
     awardAudio.preload = 'auto';
     awardAudio.volume = 1;
     awardAudio.addEventListener('error', () => {
@@ -149,21 +204,13 @@ const CaseOpening = observer(() => {
 
   useEffect(() => {
     if (availableItems.length > 0) {
-      const generated: CaseItem[] = [];
-
-      for (let i = 0; i < ITEMS_TO_GENERATE; i++) {
-        const randomIndex = Math.floor(Math.random() * availableItems.length);
-        const randomItem = availableItems[randomIndex];
-        generated.push({...randomItem});
-      }
-
-      setSliderItems(generated);
+      setSliderItems(buildRandomSliderStrip(availableItems));
       setOffset(0);
     }
   }, [availableItems]);
 
   useEffect(() => {
-    if (state === 'idle' && sliderItems.length > 0) {
+    if (state === 'idle' && sliderItems.length > 0 && introComplete) {
       let lastTime: number | undefined;
 
       const step = (now: number) => {
@@ -195,121 +242,146 @@ const CaseOpening = observer(() => {
         if (animationRef.current) cancelAnimationFrame(animationRef.current);
       };
     }
-  }, [state, sliderItems.length]);
+  }, [state, sliderItems.length, introComplete]);
 
   useEffect(() => {
     const winningItem = wonItems[0];
 
-    if (state === 'spinning' && winningItem) {
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current);
+    if (!(state === 'spinning' && winningItem)) {
+      spinFinalizeRef.current = null;
+      return undefined;
+    }
+
+    if (animationRef.current != null) {
+      cancelAnimationFrame(animationRef.current);
+    }
+
+    const winningIndex = Math.floor(ITEMS_TO_GENERATE * 0.7);
+
+    setSliderItems(prev => {
+      const newItems = [...prev];
+      newItems[winningIndex] = winningItem;
+      return newItems;
+    });
+
+    const spinAud = spinAudioRef.current;
+    if (spinAud) {
+      try {
+        spinAud.currentTime = 0;
+        const p = spinAud.play();
+        if (p) p.catch(() => console.warn('Audio play failed'));
+      } catch {
+        /* ignore */
       }
+    }
 
-      const winningIndex = Math.floor(ITEMS_TO_GENERATE * 0.7);
-      
-      setSliderItems(prev => {
-        const newItems = [...prev];
-        newItems[winningIndex] = winningItem;
-        return newItems;
-      });
+    const centerIndex = Math.floor(ITEMS_TO_GENERATE / 2);
+    const extraLaps = 4;
+    const mod = ITEMS_TO_GENERATE;
 
-      const spinAud = spinAudioRef.current;
+    const diff = ((winningIndex - centerIndex) % mod + mod) % mod;
+    const K = extraLaps * mod + diff;
+
+    setOffset(currentOffset => {
+      const n = ((currentOffset % ITEM_TOTAL) + ITEM_TOTAL) % ITEM_TOTAL;
+      startOffsetRef.current = n > 0 ? n - ITEM_TOTAL : n;
+      return currentOffset;
+    });
+
+    targetOffsetRef.current = -K * ITEM_TOTAL;
+    startTimeRef.current = performance.now();
+    shiftedCountRef.current = 0;
+    targetItemIndexRef.current = winningIndex;
+
+    let spinSettled = false;
+
+    const finalize = () => {
+      if (spinSettled) return;
+      spinSettled = true;
+      if (animationRef.current != null) {
+        cancelAnimationFrame(animationRef.current);
+        animationRef.current = undefined;
+      }
       if (spinAud) {
         try {
+          spinAud.pause();
           spinAud.currentTime = 0;
-          const p = spinAud.play();
-          if (p) p.catch(() => console.warn('Audio play failed'));
-        } catch {}
+        } catch {
+          /* ignore */
+        }
       }
 
-      const centerIndex = Math.floor(ITEMS_TO_GENERATE / 2);
-      const extraLaps = 4;
-      const mod = ITEMS_TO_GENERATE;
-
-      const diff = ((winningIndex - centerIndex) % mod + mod) % mod;
-      const K = extraLaps * mod + diff;
-
-      setOffset(currentOffset => {
-        const n = ((currentOffset % ITEM_TOTAL) + ITEM_TOTAL) % ITEM_TOTAL;
-        startOffsetRef.current = n > 0 ? n - ITEM_TOTAL : n;
-        return currentOffset;
-      });
-      
-      targetOffsetRef.current = -K * ITEM_TOTAL;
-      startTimeRef.current = performance.now();
-      shiftedCountRef.current = 0;
-      targetItemIndexRef.current = winningIndex;
-
-      const finalize = () => {
-        if (spinAud) {
-          try {
-            spinAud.pause();
-            spinAud.currentTime = 0;
-          } catch {}
-        }
-
-        const finalTotalShifted = Math.floor(-targetOffsetRef.current / ITEM_TOTAL);
-        const remainShift = finalTotalShifted - shiftedCountRef.current;
-        if (remainShift > 0) {
-          setSliderItems(prev => {
-            const arr = [...prev];
-            for (let i = 0; i < remainShift; i++) {
-              const first = arr.shift();
-              if (first) arr.push(first);
-            }
-            return arr;
-          });
-          shiftedCountRef.current = finalTotalShifted;
-        }
-
+      const finalTotalShifted = Math.floor(-targetOffsetRef.current / ITEM_TOTAL);
+      const remainShift = finalTotalShifted - shiftedCountRef.current;
+      if (remainShift > 0) {
         setSliderItems(prev => {
           const arr = [...prev];
-          arr[centerIndex] = winningItem;
+          for (let i = 0; i < remainShift; i++) {
+            const first = arr.shift();
+            if (first) arr.push(first);
+          }
           return arr;
         });
+        shiftedCountRef.current = finalTotalShifted;
+      }
 
-        setOffset(0);
-        finishSpin();
-      };
+      setSliderItems(prev => {
+        const arr = [...prev];
+        arr[centerIndex] = winningItem;
+        return arr;
+      });
 
-      const animate = (now: number) => {
-        const elapsed = now - (startTimeRef.current as number);
-        const t = Math.min(elapsed / SPIN_DURATION_MS, 1);
+      setOffset(0);
+      finishSpin();
+    };
 
-        const eased = 1 - Math.pow(1 - t, 4);
+    spinFinalizeRef.current = finalize;
 
-        const start = startOffsetRef.current;
-        const target = targetOffsetRef.current;
-        const rawOffset = start + (target - start) * eased;
+    const animate = (now: number) => {
+      const elapsed = now - (startTimeRef.current as number);
+      const spinMs = spinDurationMsRef.current;
+      const t = Math.min(elapsed / spinMs, 1);
 
-        const totalShifted = Math.floor(-rawOffset / ITEM_TOTAL);
-        const displayOffset = rawOffset + totalShifted * ITEM_TOTAL;
+      const eased = 1 - Math.pow(1 - t, 4);
 
-        const needShift = totalShifted - shiftedCountRef.current;
-        if (needShift > 0) {
-          setSliderItems(prev => {
-            const arr = [...prev];
-            for (let i = 0; i < needShift; i++) {
-              const first = arr.shift();
-              if (first) arr.push(first);
-            }
-            return arr;
-          });
-          shiftedCountRef.current = totalShifted;
-        }
+      const start = startOffsetRef.current;
+      const target = targetOffsetRef.current;
+      const rawOffset = start + (target - start) * eased;
 
-        setOffset(displayOffset);
+      const totalShifted = Math.floor(-rawOffset / ITEM_TOTAL);
+      const displayOffset = rawOffset + totalShifted * ITEM_TOTAL;
 
-        if (t >= 1) {
-          finalize();
-        } else {
-          animationRef.current = requestAnimationFrame(animate);
-        }
-      };
+      const needShift = totalShifted - shiftedCountRef.current;
+      if (needShift > 0) {
+        setSliderItems(prev => {
+          const arr = [...prev];
+          for (let i = 0; i < needShift; i++) {
+            const first = arr.shift();
+            if (first) arr.push(first);
+          }
+          return arr;
+        });
+        shiftedCountRef.current = totalShifted;
+      }
 
-      animationRef.current = requestAnimationFrame(animate);
-    }
-  }, [state, wonItems]);
+      setOffset(displayOffset);
+
+      if (t >= 1) {
+        finalize();
+      } else {
+        animationRef.current = requestAnimationFrame(animate);
+      }
+    };
+
+    animationRef.current = requestAnimationFrame(animate);
+
+    return () => {
+      spinFinalizeRef.current = null;
+      if (animationRef.current != null) {
+        cancelAnimationFrame(animationRef.current);
+      }
+    };
+  }, [state, wonItems, finishSpin]);
 
   useEffect(() => {
     if (state === 'finished') {
@@ -375,6 +447,12 @@ const CaseOpening = observer(() => {
   const handleOpenCase = async () => {
     if (state !== 'idle' || !canOpen) return;
 
+    const preludeVideo = introVideoRef.current;
+    if (preludeVideo) {
+      preludeVideo.muted = false;
+      preludeVideo.volume = CASE_INTRO_VIDEO_VOLUME;
+    }
+
     const requestData = {
       consumeType: 'item',
       caseName: caseCollection?.name,
@@ -421,11 +499,38 @@ const CaseOpening = observer(() => {
         if (!winningItems || winningItems.length === 0) return;
 
         setWonItems(winningItems);
+        setIntroComplete(false);
+        setIsPreludePlaying(true);
 
-        mainService.startSpin({
-          type: 'other',
-          winningItem: winningItems[0]
-        });
+        const video = introVideoRef.current;
+        if (video) {
+          video.muted = false;
+          video.volume = CASE_INTRO_VIDEO_VOLUME;
+          video.currentTime = 0;
+          const playPromise = video.play();
+          if (playPromise) {
+            playPromise.catch(() => console.warn('Intro video play failed'));
+          }
+        }
+
+        if (preludeTimeoutRef.current != null) {
+          clearTimeout(preludeTimeoutRef.current);
+        }
+        preludeTimeoutRef.current = setTimeout(() => {
+          preludeTimeoutRef.current = undefined;
+          const v = introVideoRef.current;
+          let spinMs = CASE_SPIN_SYNC_WITH_VIDEO_MS;
+          if (v && Number.isFinite(v.duration) && v.duration > 0) {
+            spinMs = Math.max(100, (v.duration - v.currentTime) * 1000);
+          }
+          spinDurationMsRef.current = spinMs;
+          setIntroComplete(true);
+          setIsPreludePlaying(false);
+          mainService.startSpin({
+            type: 'other',
+            winningItem: winningItems[0]
+          });
+        }, CASE_SLIDER_ENTERS_AT_MS);
       } else {
         console.error(response?.message || 'Không thể mở rương');
       }
@@ -441,7 +546,13 @@ const CaseOpening = observer(() => {
     setShowcaseIndex(-1);
     setDisplayedItems([]);
     resetState();
-  }, [resetState]);
+    clearPrelude();
+    setIntroComplete(false);
+    setOffset(0);
+    if (availableItems.length > 0) {
+      setSliderItems(buildRandomSliderStrip(availableItems));
+    }
+  }, [resetState, clearPrelude, availableItems]);
 
   const handleClaimAllRewards = useCallback(async () => {
     if (wonItems.length === 0) {
@@ -483,7 +594,10 @@ const CaseOpening = observer(() => {
 
   const handleClose = async () => {
     if (state !== 'idle') return;
-    // resetSelectedCase();
+    if (isPreludePlaying) {
+      setWonItems([]);
+    }
+    clearPrelude();
     await fetchNui("main:close");
   };
 
@@ -569,40 +683,35 @@ const CaseOpening = observer(() => {
           >
             <img
               src="/images/logo.webp"
-              alt="GTAGO Logo"
+              alt="Logo"
               className="pointer-events-none size-[32vh] object-contain"
               loading="lazy"
             />
           </motion.div>
 
-          <div className="relative size-full flex flex-col items-center justify-center pt-[3vh]">
-            <div
-              className="pointer-events-none absolute inset-0 z-[1] size-full bg-[url('/images/case-opening-bg.webp')] bg-no-repeat bg-full-size bg-full-center opacity-[0.88]"
-              style={{
-                backgroundImage: 'url("/images/case-opening-bg.webp"), radial-gradient(180.94% 70.6% at 50% 100%, #1F0001 0%, rgba(18, 2, 2, 0.90) 100%)',
-                backgroundSize: 'cover, cover',
-                backgroundPosition: 'center, center',
-                backgroundRepeat: 'no-repeat, no-repeat',
-                backgroundBlendMode: 'multiply, normal'
+          <div className="relative size-full flex flex-col items-center justify-center">
+            <video
+              ref={introVideoRef}
+              className="pointer-events-none absolute inset-0 z-[1] size-full object-contain"
+              src={CASE_INTRO_VIDEO_SRC}
+              playsInline
+              preload="auto"
+              aria-hidden
+              onEnded={() => {
+                spinFinalizeRef.current?.();
               }}
-              aria-hidden="true"
-            />
-            <div 
-              className="pointer-events-none absolute inset-0 z-[1] size-full opacity-[0.65]"
-              style={{
-                background: 'radial-gradient(180.94% 70.6% at 50% 100%, #1F0001 0%, rgba(18, 2, 2, 0.90) 100%)',
-                backgroundBlendMode: 'normal, multiply, normal',
+              onError={() => {
+                console.warn('Intro video failed to load');
               }}
             />
-            <div className="pointer-events-none absolute bottom-0 left-0 z-[1] w-full h-[9.7vh] bg-[url('/images/donation-asset.webp')] bg-no-repeat bg-full-size bg-full-center" />
-            <h1 className="case__header--title text-[3.8vh] font-bold uppercase mb-[1.85vh] !font-roboto z-[2]">
+            {/* <h1 className="case__header--title text-[3.8vh] font-bold uppercase mb-[1.85vh] !font-roboto z-[2]">
               {caseCollection?.label || 'Chưa cập nhật'}
             </h1>
             <p className="!font-roboto case__header--description text-[1.55vh] font-normal text-[#FFB4B5] mb-[8.4vh] z-[2]">
               {caseCollection?.description || 'Nhận skin súng, phụ kiện súng và các nhu yếu phẩm'}
-            </p>
+            </p> */}
 
-            <div className="flex items-center justify-center pb-[12.9vh] w-[53.4vh] h-[35.2vh] relative -mb-[6vh] z-[2]">
+            {/* <div className="flex items-center justify-center w-[53.4vh] -mb-[5vh] relative z-[2]">
               <div className="flex items-center justify-center absolute -top-[6.2vh] right-[3.75vw] min-w-[8.05vh] h-[2.95vh] bg-[url('/images/case-remaining-wrapper.webp')] bg-no-repeat bg-full-size bg-full-center pt-[.05vh] pl-[1.5vh] pr-[.5vh] drop-shadow-[0_4px_4px_#00000040] z-[2]">
                 <span className="text-[1.55vh] font-medium text-white">
                   {`x${formatNumber(ownedCaseCount)}`}
@@ -616,20 +725,30 @@ const CaseOpening = observer(() => {
                 skeletonTextSize="text-[1.65vh]"
                 fallbackSrc="/images/box.webp"
               />
-            </div>
+            </div> */}
 
-            <p className="!font-roboto text-[1.55vh] font-normal text-[#FFC2C3] mb-[2vh] z-[2]">
+            {/* <p className="!font-roboto text-[1.55vh] font-normal text-[#FFC2C3] mb-[2vh] z-[2]">
               Vật phẩm có trong rương:
-            </p>
+            </p> */}
 
-            <CaseSlider
-              ref={viewportRef}
-              sliderItems={sliderItems}
-              offset={offset}
-              centerItem={centerItem}
-              getItemOpacity={getItemOpacity}
-              itemRefs={itemRefs}
-            />
+            <motion.div
+              className={`z-[2] ${introComplete ? '' : 'pointer-events-none'}`}
+              initial={false}
+              animate={{ opacity: introComplete ? 1 : 0 }}
+              transition={{
+                duration: CASE_SLIDER_AFTER_INTRO_FADE_S,
+                ease: [0.43, 0.13, 0.23, 0.96],
+              }}
+            >
+              <CaseSlider
+                ref={viewportRef}
+                sliderItems={sliderItems}
+                offset={offset}
+                centerItem={centerItem}
+                getItemOpacity={getItemOpacity}
+                itemRefs={itemRefs}
+              />
+            </motion.div>
 
             <ActionButtons
               state={state}
