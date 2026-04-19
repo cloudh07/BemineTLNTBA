@@ -75,7 +75,7 @@ function AddPlayerAccountMoney(player, account, amount)
   elseif Config.Framework == 'esx' then
     return player.addAccountMoney(account, amount)
   elseif Config.Framework == 'qbox' or Config.Framework == 'qb' then
-    return player.Functions.AddMoney(account, amount, 'gd_case')
+    return player.Functions.AddMoney(account, amount, 'cl_caseOpening')
   end
 end
 
